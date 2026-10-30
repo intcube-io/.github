@@ -11,9 +11,12 @@ des PRs mit gitleaks. Ein Repo braucht dafür keine eigene Workflow-Datei. Ein
 Fund macht den Check rot; die Ausgabe nennt Datei, Zeile, Commit und Regel,
 nie den Wert (`--redact`).
 
-Ein Fehlalarm wird im betroffenen Repo per `.gitleaks.toml` (Allowlist mit
-Begründung) erledigt, nicht hier. Ein echter Fund: Credential widerrufen,
-dann Commit entfernen, solange der PR offen ist.
+Konfiguration und `.gitleaksignore` liest der Check vom **Base-Branch**, nicht
+aus dem PR, und `gitleaks:allow`-Kommentare zählen nicht: sonst könnte ein PR
+seine eigene Ausnahme mitbringen. Ein Fehlalarm wird deshalb in einem eigenen,
+vorher gemergten PR per `.gitleaks.toml` (`[extend] useDefault = true` plus
+enge, begründete Allowlist) erledigt. Ein echter Fund: Credential widerrufen;
+den Commit zu entfernen reicht nicht, `refs/pull/<n>/head` bleibt.
 
 ## pre-commit
 
