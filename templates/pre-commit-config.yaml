@@ -1,0 +1,11 @@
+# Vorlage: gitleaks als pre-commit-Hook (intcube-io/ops#1127, CVP-10).
+# Als `.pre-commit-config.yaml` ins Repo-Root kopieren, dann einmalig:
+#   brew install pre-commit && pre-commit install
+# Der Hook scannt die gestagten Änderungen vor jedem Commit. Er ersetzt den
+# Pflicht-Check `gitleaks` im PR nicht, er holt den Fund nur vor den Push.
+# Version im Gleichschritt mit .github/workflows/gitleaks.yml dieses Repos.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
