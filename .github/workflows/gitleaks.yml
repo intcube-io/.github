@@ -1,0 +1,103 @@
+name: gitleaks
+
+# Org-wide secret detection on every pull request (intcube-io/ops#1127,
+# CVP-10, decision 5 of epic ops#1117). This file is the REQUIRED workflow of
+# the org ruleset `gitleaks-required`: GitHub runs it from here, in the
+# context of the target repo, for every PR against a default branch. A repo
+# does not need its own copy. It is also callable (`workflow_call`) for a repo
+# that wants it on other events.
+#
+# Scope: the commits the PR adds (base..head), not the whole history. The
+# full history of every repo is trufflehog's job, weekly (ops#1122). This
+# keeps the check fast and makes it fail only on what the PR introduces.
+#
+# Config: gitleaks' built-in rules (they cover `sk-ant-api03-` and
+# `sk-ant-admin01-` as `anthropic-api-key` / `anthropic-admin-api-key`,
+# measured on 8.30.1), plus the repo's own `.gitleaks.toml` and
+# `.gitleaksignore` AS THEY ARE ON THE BASE BRANCH. Not the PR's copy: gitleaks
+# would otherwise load both from the checked-out PR, and a PR could carry
+# `paths = ['.*']` next to its leak and pass (reproduced on 8.30.1). For the
+# same reason inline `gitleaks:allow` comments are ignored. A false positive
+# is therefore allowlisted in a PR of its own, merged first.
+# Merge commits: `--diff-merges=remerge` shows what a merge itself added
+# (conflict resolutions); plain `git log -p` shows merges without a diff, and a
+# key added in a merge commit passed (reproduced on 8.30.1).
+# Output is `--redact`ed: a finding names file, line, commit and rule, never
+# the value.
+#
+# Version: gitleaks is pinned with its SHA256, in lockstep with ops'
+# `.github/workflows/ci.yml` (GITLEAKS_VERSION). This repo is not managed by
+# Renovate (ops ADR-0016 names ops, dash, meridian); bump both together.
+
+on:
+  pull_request:
+  merge_group:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read  # checkout of the PR's commits
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # base..head needs both ends in the local history.
+          fetch-depth: 0
+          # Nothing here pushes or fetches with the token (zizmor `artipacked`).
+          persist-credentials: false
+
+      - name: Install gitleaks
+        run: |
+          GITLEAKS_VERSION=8.30.1
+          GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          ASSET="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          BASE="https://github.com/gitleaks/gitleaks/releases/download"
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          curl -fsSL -o "$RUNNER_TEMP/${ASSET}" "${BASE}/v${GITLEAKS_VERSION}/${ASSET}"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/${ASSET}" | sha256sum -c -
+          tar -xz -C "$RUNNER_TEMP/gitleaks" -f "$RUNNER_TEMP/${ASSET}" gitleaks
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+
+      - name: gitleaks — commits of this change
+        env:
+          # Through env, not `${{ }}` inside the script: expressions are
+          # pasted into the script text before bash sees it.
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          MQ_BASE: ${{ github.event.merge_group.base_sha }}
+          MQ_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          BASE_SHA="${PR_BASE:-${MQ_BASE:-}}"
+          HEAD_SHA="${PR_HEAD:-${MQ_HEAD:-}}"
+          CFG_REF="${BASE_SHA:-HEAD}"
+
+          # Config and ignore file from the base, never from the change.
+          CFG="$RUNNER_TEMP/gitleaks-config.toml"
+          IGN="$RUNNER_TEMP/gitleaks-ignore"
+          mkdir -p "$IGN"
+          if git cat-file -e "${CFG_REF}:.gitleaks.toml" 2>/dev/null; then
+            git show "${CFG_REF}:.gitleaks.toml" > "$CFG"
+            echo "config: .gitleaks.toml from ${CFG_REF}"
+          else
+            printf '[extend]\nuseDefault = true\n' > "$CFG"
+            echo "config: gitleaks defaults (no .gitleaks.toml on ${CFG_REF})"
+          fi
+          if git cat-file -e "${CFG_REF}:.gitleaksignore" 2>/dev/null; then
+            git show "${CFG_REF}:.gitleaksignore" > "$IGN/.gitleaksignore"
+          fi
+          ARGS=(--redact -v --config "$CFG" --gitleaks-ignore-path "$IGN" --ignore-gitleaks-allow)
+
+          if [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ]; then
+            echo "scanning ${BASE_SHA}..${HEAD_SHA}"
+            gitleaks git "${ARGS[@]}" --log-opts="--diff-merges=remerge ${BASE_SHA}..${HEAD_SHA}" .
+          else
+            # Any other event (a caller's push, a manual run): whole history.
+            echo "no PR/merge-group range: scanning the full history"
+            gitleaks git "${ARGS[@]}" --log-opts="--full-history --all --diff-merges=remerge" .
+          fi
